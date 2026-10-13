@@ -1,0 +1,14 @@
+{
+ "year": 2026,
+ "holidays": ["2026-10-01", "2026-12-25", "2026-12-26"],
+ "blackouts": [{"name": "Month-end close", "from": "2026-10-28", "to": "2026-10-31", "teams": ["Finance"]}],
+ "min_on_duty": {"Support": 2, "Finance": 1},
+ "staff": {
+  "Amaka": {"team": "Support", "balance": 12},
+  "Bayo": {"team": "Support", "balance": 3},
+  "Chinedu": {"team": "Support", "balance": 10},
+  "Dupe": {"team": "Finance", "balance": 15},
+  "Efe": {"team": "Finance", "balance": 8}
+ },
+ "already_approved": {"Chinedu": ["2026-10-21", "2026-10-22"]}
+}

@@ -1,0 +1,379 @@
+{
+  "name": "Leave Request Approval Bot (AI Automation Projects #20)",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Leave request",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Employee",
+              "requiredField": true
+            },
+            {
+              "fieldLabel": "Request",
+              "fieldType": "textarea",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "d0af9743-cbeb-5442-b6d5-bfbb6808ce09",
+      "name": "Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "6fcda981-ec78-5403-aea6-8042b6f55856"
+    },
+    {
+      "parameters": {},
+      "id": "824644bf-ce0c-51b5-b7ac-7781fa1478c6",
+      "name": "Test with sample data",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sample data from this repo. Click 'Test workflow' to run the whole flow on it.\nconst sample = [\n {\n  \"Employee\": \"Amaka\",\n  \"Request\": \"Hi, I'd like to be off from 12th to 16th October please\"\n },\n {\n  \"Employee\": \"Bayo\",\n  \"Request\": \"Leave 19th - 23rd Oct for a family wedding\"\n },\n {\n  \"Employee\": \"Dupe\",\n  \"Request\": \"Can I take 29th to 30th Oct?\"\n },\n {\n  \"Employee\": \"Amaka\",\n  \"Request\": \"Also off 21st to 22nd Oct\"\n },\n {\n  \"Employee\": \"Efe\",\n  \"Request\": \"Need some days off soon\"\n }\n];\nreturn sample.map(json => ({ json }));"
+      },
+      "id": "eccc86ff-b8cb-56be-a8fc-9fed80e3e1be",
+      "name": "Sample data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Leave Request Approval Bot: core logic (ported from main.py)\nconst CFG = {\n \"year\": 2026,\n \"holidays\": [\n  \"2026-10-01\",\n  \"2026-12-25\",\n  \"2026-12-26\"\n ],\n \"blackouts\": [\n  {\n   \"name\": \"Month-end close\",\n   \"from\": \"2026-10-28\",\n   \"to\": \"2026-10-31\",\n   \"teams\": [\n    \"Finance\"\n   ]\n  }\n ],\n \"min_on_duty\": {\n  \"Support\": 2,\n  \"Finance\": 1\n },\n \"staff\": {\n  \"Amaka\": {\n   \"team\": \"Support\",\n   \"balance\": 12\n  },\n  \"Bayo\": {\n   \"team\": \"Support\",\n   \"balance\": 3\n  },\n  \"Chinedu\": {\n   \"team\": \"Support\",\n   \"balance\": 10\n  },\n  \"Dupe\": {\n   \"team\": \"Finance\",\n   \"balance\": 15\n  },\n  \"Efe\": {\n   \"team\": \"Finance\",\n   \"balance\": 8\n  }\n },\n \"already_approved\": {\n  \"Chinedu\": [\n   \"2026-10-21\",\n   \"2026-10-22\"\n  ]\n }\n};\n// ---- input normaliser (works for Webhook, Form, WhatsApp, Gmail, Sheets and sample data)\nconst input = $input.all().flatMap(i => {\n  const j = i.json || {};\n  if (j.messages && Array.isArray(j.messages)) {           // WhatsApp Trigger\n    return j.messages.filter(m => m.text).map(m => ({ from: '+' + m.from, text: m.text.body }));\n  }\n  if (j.Subject !== undefined || j.From !== undefined) {     // Gmail Trigger (simple)\n    return [{ from: (j.From || '').replace(/.*<|>.*/g, ''), subject: j.Subject || '', body: j.snippet || j.text || '' }];\n  }\n  const b = (j.body !== undefined && j.headers !== undefined) ? j.body : j;   // Webhook wraps payload in body\n  if (Array.isArray(b)) return b;\n  if (b && Array.isArray(b.items)) return b.items;\n  return [b];\n});\n\nconst MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };\nconst parse = t => { const m = t.toLowerCase().match(/(\\d{1,2})(?:st|nd|rd|th)?\\s*(?:([a-z]{3})[a-z]*)?\\s*(?:to|-|until|till)\\s*(\\d{1,2})(?:st|nd|rd|th)?\\s*([a-z]{3})[a-z]*/);\n  if (!m) return null; const m1 = MONTHS[m[2]] ? m[2] : m[4];\n  return [new Date(Date.UTC(CFG.year, MONTHS[m1] - 1, +m[1])), new Date(Date.UTC(CFG.year, MONTHS[m[4]] - 1, +m[3]))]; };\nconst iso = d => d.toISOString().slice(0, 10);\nconst approved = JSON.parse(JSON.stringify(CFG.already_approved)), out = [];\nfor (const r of input) {\n  const emp = r.Employee || r.employee, text = r.Request || r.text, staff = CFG.staff[emp];\n  const span = parse(text); let decision, reason;\n  if (!staff) { decision = 'CLARIFY'; reason = 'employee not found'; }\n  else if (!span) { decision = 'CLARIFY'; reason = \"couldn't read the dates; please use e.g. '20 Oct to 24 Oct'\"; }\n  else {\n    const days = []; for (let d = new Date(span[0]); d <= span[1]; d.setUTCDate(d.getUTCDate() + 1)) { const w = d.getUTCDay(); if (w && w !== 6 && !CFG.holidays.includes(iso(d))) days.push(iso(d)); }\n    const black = CFG.blackouts.find(b => b.teams.includes(staff.team) && days.some(d => d >= b.from && d <= b.to));\n    const team = Object.keys(CFG.staff).filter(n => CFG.staff[n].team === staff.team);\n    const thin = days.find(d => team.length - 1 - team.filter(n => n !== emp && (approved[n] || []).includes(d)).length < CFG.min_on_duty[staff.team]);\n    if (days.length > staff.balance) { decision = 'DECLINE'; reason = `needs ${days.length} days but balance is ${staff.balance}`; }\n    else if (black) { decision = 'DECLINE'; reason = 'overlaps blackout: ' + black.name; }\n    else if (thin) { decision = 'ROUTE TO MANAGER'; reason = `${staff.team} would be below minimum cover on ${thin}`; }\n    else { decision = 'APPROVED'; reason = `${days.length} working days; balance after: ${staff.balance - days.length}`;\n      staff.balance -= days.length; (approved[emp] = approved[emp] || []).push(...days); }\n  }\n  out.push({ route: decision, employee: emp, request: text, decision, reason });\n}\nreturn out.map(json => ({ json }));\n"
+      },
+      "id": "71b19af3-c1be-57b9-b813-055d51a816d2",
+      "name": "Logic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "aae9d42a-8cb7-53f7-acb8-c89efe2e3791",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "APPROVED",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "APPROVED"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "161f2f0a-cdf7-5519-aecf-05df6bdd5513",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "DECLINE",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "DECLINE"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "433b12cc-dc74-533d-9e92-a90de1239aba",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "ROUTE TO MANAGER",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ROUTE TO MANAGER"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "bc275fc0-2417-5470-9424-fcf75c90a1b3",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "CLARIFY",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "CLARIFY"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "fd73dab9-84b9-5e97-b431-e883ad50cdba",
+      "name": "Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        720,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "",
+          "mode": "list"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {},
+          "matchingColumns": [],
+          "schema": []
+        },
+        "options": {}
+      },
+      "id": "b9f433db-e837-5685-80ed-c8ecb6664368",
+      "name": "Record approved leave",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        980,
+        -150
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#hr",
+          "mode": "name"
+        },
+        "text": "=@{{ $json.employee }} your leave request could not be approved: {{ $json.reason }}",
+        "otherOptions": {}
+      },
+      "id": "4130d867-5de9-5e76-97ae-1273b5a7b386",
+      "name": "Tell employee (declined)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        980,
+        30
+      ],
+      "webhookId": "4130d867-5de9-5e76-97ae-1273b5a7b386"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#managers",
+          "mode": "name"
+        },
+        "text": "=Leave request from {{ $json.employee }} needs a decision: {{ $json.reason }}",
+        "otherOptions": {}
+      },
+      "id": "429d22ff-6a13-5682-958f-80c589d535ae",
+      "name": "Ask manager to decide",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        980,
+        210
+      ],
+      "webhookId": "429d22ff-6a13-5682-958f-80c589d535ae"
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#hr",
+          "mode": "name"
+        },
+        "text": "=@{{ $json.employee }} {{ $json.reason }}",
+        "otherOptions": {}
+      },
+      "id": "a51a64d5-3014-5a9b-add1-8fe99d71f225",
+      "name": "Ask employee for dates",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        980,
+        390
+      ],
+      "webhookId": "a51a64d5-3014-5a9b-add1-8fe99d71f225"
+    },
+    {
+      "parameters": {
+        "content": "## Leave Request Approval Bot\nChecks balance, team coverage and blackout dates, then auto-approves the easy ones and routes the rest.\n\nStaff fill a hosted form ('off from 12th to 16th October'). Dates are read from free text, working days counted without weekends and holidays, then balance, blackout periods and minimum team cover are checked. CFG holds balances and approved leave; in production load them from a sheet and write approvals back.\n\n**Try it:** click *Test workflow* to run on the sample data. Then connect your credentials on the output nodes and activate.\n\nCode and docs: github.com/Princewill106/leave-request-approval-bot",
+        "height": 340,
+        "width": 420,
+        "color": 5
+      },
+      "id": "59b40462-dcf6-5f25-9b7e-b1dcf08fb541",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -460
+      ]
+    }
+  ],
+  "connections": {
+    "Test with sample data": {
+      "main": [
+        [
+          {
+            "node": "Sample data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Form": {
+      "main": [
+        [
+          {
+            "node": "Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample data": {
+      "main": [
+        [
+          {
+            "node": "Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Logic": {
+      "main": [
+        [
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route": {
+      "main": [
+        [
+          {
+            "node": "Record approved leave",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Tell employee (declined)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ask manager to decide",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ask employee for dates",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
